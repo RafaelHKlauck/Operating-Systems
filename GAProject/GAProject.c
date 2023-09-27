@@ -14,6 +14,7 @@ typedef struct
   double disk_required;
   int is_done;
   int is_running;
+  char done_by;
 } POD;
 typedef struct
 {
@@ -43,12 +44,15 @@ pthread_mutex_t pod_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t workerA_pods_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for worker A pods
 pthread_mutex_t workerB_pods_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for worker B pods
 pthread_mutex_t tasks_completed_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t workerA_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex to update Worker A
+pthread_mutex_t workerB_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex to update Worker B
 
 pthread_cond_t workerA_pods_condition = PTHREAD_COND_INITIALIZER;
 pthread_cond_t workerB_pods_condition = PTHREAD_COND_INITIALIZER;
 
 int current_task = 0;
 int tasks_completed = 0;
+int should_use_disk = 0;
 
 pthread_t workers_threads_simulations[NUM_TASKS];
 
@@ -60,11 +64,12 @@ void initializePods()
   for (int i = 0; i < NUM_TASKS; i++)
   {
     pods[i].id = i;
-    pods[i].cpu_required = (rand() % 5 + 1) * 0.1;  // CPU requerida entre 0.1 e 0.5
+    pods[i].cpu_required = (rand() % 5 + 1) * 0.1;  // CPU required between 0.1 - 0.5
     pods[i].mem_required = (rand() % 1537) + 512;   // Memória requerida entre 512 e 2048
     pods[i].disk_required = (rand() % 5 + 1) * 100; // Espaço em disco requerido entre 100 e 500
     pods[i].is_done = 0;
     pods[i].is_running = 0;
+    pods[i].done_by = ' ';
 
     printf("Pod: %d, CPU: %.2lf, Memória: %.2lf, Disco: %.2lf\n", pods[i].id, pods[i].cpu_required, pods[i].mem_required, pods[i].disk_required);
   }
@@ -81,15 +86,33 @@ void *worker_task_simulation(void *arg)
   double pod_mem_required = pod.mem_required;
   double pod_disk_required = pod.disk_required;
 
-  sleep(pod_cpu_required * 10);
-  printf("\nWorker %c executando tarefa %d (CPU %.2lf, Memória %.2lf, Disco %.2lf)\n",
+  printf("\nWorker %c going to do task %d (CPU %.2lf, Memory %.2lf, Disk %.2lf)\n",
          worker_name, pod_id, pod_cpu_required, pod_mem_required, pod_disk_required);
+  if (worker_name == 'A')
+  {
+    workerA.cpu_capacity -= pod_cpu_required;
+    workerA.mem_capacity -= pod_mem_required;
+    workerA.disk_capacity -= pod_disk_required;
+
+    printf("Now worker A has CPU: %.2lf, Memory: %.2lf, Disk: %.2lf\n", workerA.cpu_capacity, workerA.mem_capacity, workerA.disk_capacity);
+  }
+  else if (worker_name == 'B')
+  {
+    workerB.cpu_capacity -= pod_cpu_required;
+    workerB.mem_capacity -= pod_mem_required;
+    workerB.disk_capacity -= pod_disk_required;
+
+    printf("Now worker B has CPU: %.2lf, Memory: %.2lf, Disk: %.2lf\n", workerB.cpu_capacity, workerB.mem_capacity, workerB.disk_capacity);
+  }
+
+  sleep(pod_cpu_required * 10);
+  printf("\nWorker %c finish task %d\n", worker_name, pod_id);
 
   pthread_mutex_lock(&pod_mutex);
   pods[pod_id].is_done = 1;
+  pods[pod_id].done_by = worker_name;
   pthread_mutex_unlock(&pod_mutex);
 
-  pthread_mutex_lock(&tasks_completed_mutex);
   tasks_completed++;
   if (tasks_completed == NUM_TASKS)
   {
@@ -97,7 +120,27 @@ void *worker_task_simulation(void *arg)
     pthread_cond_signal(&workerA_pods_condition);
     pthread_cond_signal(&workerB_pods_condition);
   }
-  pthread_mutex_unlock(&tasks_completed_mutex);
+
+  if (worker_name == 'A')
+  {
+    pthread_mutex_lock(&workerA_mutex);
+    workerA.cpu_capacity += pod_cpu_required;
+    workerA.mem_capacity += pod_mem_required;
+    workerA.disk_capacity += pod_disk_required;
+
+    printf("Now worker A has CPU: %.2lf, Memória: %.2lf, Disco: %.2lf\n", workerA.cpu_capacity, workerA.mem_capacity, workerA.disk_capacity);
+    pthread_mutex_unlock(&workerA_mutex);
+  }
+  else if (worker_name == 'B')
+  {
+    pthread_mutex_lock(&workerB_mutex);
+    workerB.cpu_capacity += pod_cpu_required;
+    workerB.mem_capacity += pod_mem_required;
+    workerB.disk_capacity += pod_disk_required;
+
+    printf("Now worker B has CPU: %.2lf, Memória: %.2lf, Disco: %.2lf\n", workerB.cpu_capacity, workerB.mem_capacity, workerB.disk_capacity);
+    pthread_mutex_unlock(&workerB_mutex);
+  }
 
   pthread_exit(0);
 }
@@ -208,7 +251,7 @@ void scheduler()
     next_pod.id = -1;
     int worker_id;
 
-    // Encontre a próxima tarefa disponível que atenda aos requisitos de recursos
+    // Find next task available that meets resource requirements
     for (int i = 0; i < NUM_TASKS; i++)
     {
       int is_running = pods[i].is_running;
@@ -222,22 +265,21 @@ void scheduler()
       double disk_required = pods[i].disk_required;
 
       if (cpu_required <= workerA.cpu_capacity &&
-          mem_required <= workerA.mem_capacity)
+          mem_required <= workerA.mem_capacity &&
+          (should_use_disk == 1 ? disk_required <= workerA.disk_capacity : 1))
       {
         next_pod = pods[i];
         worker_id = 0;
         break;
       }
-      else if (cpu_required <= workerB.cpu_capacity &&
-               mem_required <= workerB.mem_capacity)
+
+      if (cpu_required <= workerB.cpu_capacity &&
+          mem_required <= workerB.mem_capacity &&
+          (should_use_disk == 1 ? disk_required <= workerB.disk_capacity : 1))
       {
         next_pod = pods[i];
         worker_id = 1;
         break;
-      }
-      else
-      {
-        printf("Não há worker disponível no momento! \n");
       }
     }
 
@@ -271,19 +313,33 @@ void scheduler()
       }
 
       current_task++;
-      // Encontrou uma tarefa disponível
-      // printf("Agendador agendou tarefa %d\n", task_index);
-      // pods[task_index].is_running = 1;
     }
 
-    // Aguarde um tempo antes de verificar novamente (ajuste conforme necessário)
     pthread_mutex_unlock(&pod_mutex);
     usleep(100000); // 100 ms
   }
 }
 
-int main()
+void history()
 {
+  printf("\n\n");
+  system("figlet -f digital PODS history");
+  for (int i = 0; i < NUM_TASKS; i++)
+  {
+    printf("Pod %d done by %c\n", pods[i].id, pods[i].done_by);
+  }
+  printf("\n");
+}
+
+int main(int argc, char *argv[])
+{
+  if (argc != 2)
+  {
+    printf("Incorrect: %s <number> <1=disk, 0=no disk> <1=random pods, 2=fixed pods>\n\n", argv[0]);
+    return 1;
+  }
+
+  should_use_disk = atol(argv[1]);
   initializePods();
 
   pthread_t threads[NUM_THREADS];
@@ -302,5 +358,6 @@ int main()
     pthread_join(threads[i], NULL);
   }
 
+  history();
   return 0;
 }
