@@ -38,12 +38,6 @@ POD workerB_pods[NUM_TASKS];
 int workerA_number_of_pods = 0;
 int workerB_number_of_pods = 0;
 
-// Simulating capacities
-double workerA_cpu_capacity = 0.4;
-double workerB_cpu_capacity = 0.7;
-double workerA_mem_capacity = 2000;
-double workerB_mem_capacity = 2048;
-
 // Mutexs and conditions variables
 pthread_mutex_t pod_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t workerA_pods_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for worker A pods
@@ -97,6 +91,12 @@ void *worker_task_simulation(void *arg)
 
   pthread_mutex_lock(&tasks_completed_mutex);
   tasks_completed++;
+  if (tasks_completed == NUM_TASKS)
+  {
+    // all tasks were completed!
+    pthread_cond_signal(&workerA_pods_condition);
+    pthread_cond_signal(&workerB_pods_condition);
+  }
   pthread_mutex_unlock(&tasks_completed_mutex);
 
   pthread_exit(0);
@@ -112,14 +112,22 @@ void *worker(void *arg)
     if (thread_id == 0)
     {
       // Worker A
+      int should_break = 0;
       pthread_mutex_lock(&workerA_pods_mutex);
-      while (workerA_number_of_pods == 0 && tasks_completed < NUM_TASKS)
+      while (workerA_number_of_pods == 0)
       {
-        printf("Worker A esperando tarefa\n");
         pthread_cond_wait(&workerA_pods_condition, &workerA_pods_mutex);
-        printf("Worker A acordou\n");
+        if (tasks_completed == NUM_TASKS)
+        {
+          should_break = 1;
+          break;
+        }
       }
-
+      if (should_break)
+      {
+        pthread_mutex_unlock(&workerA_pods_mutex);
+        break;
+      };
       for (int i = 0; i < workerA_number_of_pods; i++)
       {
         if (workerA_pods[i].is_done == 1 || workerA_pods[i].is_running == 1)
@@ -144,14 +152,22 @@ void *worker(void *arg)
     else
     {
       // Worker B
+      int should_break = 0;
       pthread_mutex_lock(&workerB_pods_mutex);
       while (workerB_number_of_pods == 0 && tasks_completed < NUM_TASKS)
       {
-        printf("Worker B esperando tarefa\n");
         pthread_cond_wait(&workerB_pods_condition, &workerB_pods_mutex);
-        printf("Worker B acordou\n");
+        if (tasks_completed == NUM_TASKS)
+        {
+          should_break = 1;
+          break;
+        }
       }
-
+      if (should_break)
+      {
+        pthread_mutex_unlock(&workerB_pods_mutex);
+        break;
+      }
       for (int i = 0; i < workerB_number_of_pods; i++)
       {
         if (workerB_pods[i].is_done == 1 || workerB_pods[i].is_running == 1)
