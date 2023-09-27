@@ -4,7 +4,7 @@
 #include <unistd.h>
 
 #define NUM_THREADS 2
-#define NUM_TASKS 10
+#define NUM_TASKS 5
 
 typedef struct
 {
@@ -15,7 +15,6 @@ typedef struct
   int is_done;
   int is_running;
 } POD;
-
 typedef struct
 {
   char name;
@@ -23,6 +22,11 @@ typedef struct
   double mem_capacity;
   double disk_capacity;
 } WORKER;
+typedef struct
+{
+  POD pod;
+  char worker_name;
+} WORKER_TASK_SIMULATION_ARGS;
 
 // Simulating workers
 WORKER workerA = {'A', 0.4, 2000, 1000};
@@ -42,14 +46,15 @@ double workerB_mem_capacity = 2048;
 
 // Mutexs and conditions variables
 pthread_mutex_t pod_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t workerA_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t workerB_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t workerA_pods_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for worker A pods
+pthread_mutex_t workerB_pods_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for worker B pods
+pthread_mutex_t tasks_completed_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-pthread_mutex_t task_condition_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t workerA_condition = PTHREAD_COND_INITIALIZER;
-pthread_cond_t workerB_condition = PTHREAD_COND_INITIALIZER;
+pthread_cond_t workerA_pods_condition = PTHREAD_COND_INITIALIZER;
+pthread_cond_t workerB_pods_condition = PTHREAD_COND_INITIALIZER;
 
 int current_task = 0;
+int tasks_completed = 0;
 
 pthread_t workers_threads_simulations[NUM_TASKS];
 
@@ -73,21 +78,27 @@ void initializePods()
 
 void *worker_task_simulation(void *arg)
 {
-  POD *pod = (POD *)arg;
-  int pod_id = pod->id;
-  double pod_cpu_required = pod->cpu_required;
-  double pod_mem_required = pod->mem_required;
-  double pod_disk_required = pod->disk_required;
-  char worker_name = pod_id % 2 == 0 ? 'A' : 'B';
+  WORKER_TASK_SIMULATION_ARGS *worker_task_simulation_args = (WORKER_TASK_SIMULATION_ARGS *)arg;
+  POD pod = worker_task_simulation_args->pod;
+  char worker_name = worker_task_simulation_args->worker_name;
+
+  int pod_id = pod.id;
+  double pod_cpu_required = pod.cpu_required;
+  double pod_mem_required = pod.mem_required;
+  double pod_disk_required = pod.disk_required;
 
   sleep(pod_cpu_required * 10);
   printf("\nWorker %c executando tarefa %d (CPU %.2lf, Memória %.2lf, Disco %.2lf)\n",
          worker_name, pod_id, pod_cpu_required, pod_mem_required, pod_disk_required);
 
-  // free(pod);
   pthread_mutex_lock(&pod_mutex);
   pods[pod_id].is_done = 1;
   pthread_mutex_unlock(&pod_mutex);
+
+  pthread_mutex_lock(&tasks_completed_mutex);
+  tasks_completed++;
+  pthread_mutex_unlock(&tasks_completed_mutex);
+
   pthread_exit(0);
 }
 
@@ -101,10 +112,12 @@ void *worker(void *arg)
     if (thread_id == 0)
     {
       // Worker A
-      pthread_mutex_lock(&workerA_mutex);
-      while (workerA_number_of_pods == 0)
+      pthread_mutex_lock(&workerA_pods_mutex);
+      while (workerA_number_of_pods == 0 && tasks_completed < NUM_TASKS)
       {
-        pthread_cond_wait(&workerA_condition, &workerA_mutex);
+        printf("Worker A esperando tarefa\n");
+        pthread_cond_wait(&workerA_pods_condition, &workerA_pods_mutex);
+        printf("Worker A acordou\n");
       }
 
       for (int i = 0; i < workerA_number_of_pods; i++)
@@ -118,19 +131,25 @@ void *worker(void *arg)
         pods[pod_id].is_running = 1;
         pthread_mutex_unlock(&pod_mutex);
 
+        WORKER_TASK_SIMULATION_ARGS worker_task_simulation_args;
+        worker_task_simulation_args.pod = *pod;
+        worker_task_simulation_args.worker_name = worker_name;
+
         pthread_t thread;
-        pthread_create(&thread, NULL, worker_task_simulation, pod);
+        pthread_create(&thread, NULL, worker_task_simulation, &worker_task_simulation_args);
         workerA_number_of_pods--;
       }
-      pthread_mutex_unlock(&workerA_mutex);
+      pthread_mutex_unlock(&workerA_pods_mutex);
     }
     else
     {
       // Worker B
-      pthread_mutex_lock(&workerB_mutex);
-      while (workerB_number_of_pods == 0)
+      pthread_mutex_lock(&workerB_pods_mutex);
+      while (workerB_number_of_pods == 0 && tasks_completed < NUM_TASKS)
       {
-        pthread_cond_wait(&workerB_condition, &workerB_mutex);
+        printf("Worker B esperando tarefa\n");
+        pthread_cond_wait(&workerB_pods_condition, &workerB_pods_mutex);
+        printf("Worker B acordou\n");
       }
 
       for (int i = 0; i < workerB_number_of_pods; i++)
@@ -144,11 +163,15 @@ void *worker(void *arg)
         pods[pod_id].is_running = 1;
         pthread_mutex_unlock(&pod_mutex);
 
+        WORKER_TASK_SIMULATION_ARGS worker_task_simulation_args;
+        worker_task_simulation_args.pod = *pod;
+        worker_task_simulation_args.worker_name = worker_name;
+
         pthread_t thread;
-        pthread_create(&thread, NULL, worker_task_simulation, pod);
+        pthread_create(&thread, NULL, worker_task_simulation, &worker_task_simulation_args);
         workerB_number_of_pods--;
       }
-      pthread_mutex_unlock(&workerB_mutex);
+      pthread_mutex_unlock(&workerB_pods_mutex);
     }
   }
 
@@ -182,15 +205,15 @@ void scheduler()
       double mem_required = pods[i].mem_required;
       double disk_required = pods[i].disk_required;
 
-      if (cpu_required <= workerA_cpu_capacity &&
-          mem_required <= workerA_mem_capacity)
+      if (cpu_required <= workerA.cpu_capacity &&
+          mem_required <= workerA.mem_capacity)
       {
         next_pod = pods[i];
         worker_id = 0;
         break;
       }
-      else if (cpu_required <= workerB_cpu_capacity &&
-               mem_required <= workerB_mem_capacity)
+      else if (cpu_required <= workerB.cpu_capacity &&
+               mem_required <= workerB.mem_capacity)
       {
         next_pod = pods[i];
         worker_id = 1;
@@ -207,28 +230,28 @@ void scheduler()
       if (worker_id == 0)
       {
         // worker A
-        pthread_mutex_lock(&workerA_mutex);
+        pthread_mutex_lock(&workerA_pods_mutex);
         workerA_pods[workerA_number_of_pods] = next_pod;
         workerA_number_of_pods++;
         if (workerA_number_of_pods == 1)
         { // it was 0 before
-          pthread_cond_signal(&workerA_condition);
+          pthread_cond_signal(&workerA_pods_condition);
         }
 
-        pthread_mutex_unlock(&workerA_mutex);
+        pthread_mutex_unlock(&workerA_pods_mutex);
       }
       else
       {
         // worker B
-        pthread_mutex_lock(&workerB_mutex);
+        pthread_mutex_lock(&workerB_pods_mutex);
         workerB_pods[workerB_number_of_pods] = next_pod;
         workerB_number_of_pods++;
         if (workerB_number_of_pods == 1)
         { // it was 0 before
-          pthread_cond_signal(&workerB_condition);
+          pthread_cond_signal(&workerB_pods_condition);
         }
 
-        pthread_mutex_unlock(&workerB_mutex);
+        pthread_mutex_unlock(&workerB_pods_mutex);
       }
 
       current_task++;
