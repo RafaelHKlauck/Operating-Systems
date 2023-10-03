@@ -2,9 +2,10 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <ncurses.h>
 
 #define NUM_THREADS 2
-#define NUM_TASKS 5
+#define NUM_TASKS 10
 
 typedef struct
 {
@@ -14,7 +15,7 @@ typedef struct
   double disk_required;
   int is_done;
   int is_running;
-  char done_by;
+  char doing_by;
 } POD;
 typedef struct
 {
@@ -30,8 +31,8 @@ typedef struct
 } WORKER_TASK_SIMULATION_ARGS;
 
 // Simulating workers
-WORKER workerA = {'A', 0.4, 2000, 1000};
-WORKER workerB = {'B', 0.7, 2048, 1000};
+WORKER workerA = {'A', 0.4, 1500, 1000};
+WORKER workerB = {'B', 0.7, 2048, 800};
 
 // Array with jobs for workes
 POD workerA_pods[NUM_TASKS];
@@ -43,36 +44,156 @@ int workerB_number_of_pods = 0;
 pthread_mutex_t pod_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t workerA_pods_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for worker A pods
 pthread_mutex_t workerB_pods_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for worker B pods
-pthread_mutex_t tasks_completed_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t workerA_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex to update Worker A
-pthread_mutex_t workerB_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex to update Worker B
+pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;        // Mutex to print on screen
 
 pthread_cond_t workerA_pods_condition = PTHREAD_COND_INITIALIZER;
 pthread_cond_t workerB_pods_condition = PTHREAD_COND_INITIALIZER;
 
 int current_task = 0;
 int tasks_completed = 0;
-int should_use_disk = 0;
+int is_custom_scheduler = 0;
+int is_fixed_pods = 0;
+int can_finish_workers_prints = 0;
 
 pthread_t workers_threads_simulations[NUM_TASKS];
 
 POD pods[NUM_TASKS];
 
+// Used only in kube_scheduler
+double cpuWeight = 1.0;
+double memWeight = 2.0;
+
+WINDOW *pods_initialized_win;
+WINDOW *worker_metrics_win;
+WINDOW *pods_win;
+
+void getFixedPods()
+{
+  pods[0] = (POD){0, 0.1, 512, 100, 0, 0, ' '};
+  pods[1] = (POD){1, 0.1, 512, 200, 0, 0, ' '};
+  pods[2] = (POD){2, 0.2, 1024, 300, 0, 0, ' '};
+  pods[3] = (POD){3, 0.4, 2048, 400, 0, 0, ' '};
+  pods[4] = (POD){4, 0.4, 512, 500, 0, 0, ' '};
+  pods[5] = (POD){5, 0.2, 1024, 100, 0, 0, ' '};
+  pods[6] = (POD){6, 0.3, 1536, 200, 0, 0, ' '};
+  pods[7] = (POD){7, 0.4, 1024, 300, 0, 0, ' '};
+  pods[8] = (POD){8, 0.3, 1000, 400, 0, 0, ' '};
+  pods[9] = (POD){9, 0.5, 1024, 500, 0, 0, ' '};
+}
+
 void initializePods()
 {
   srand(time(NULL));
+  werase(pods_initialized_win);
+  mvwprintw(pods_initialized_win, 0, 1, "Pods initialized:");
   for (int i = 0; i < NUM_TASKS; i++)
   {
-    pods[i].id = i;
-    pods[i].cpu_required = (rand() % 5 + 1) * 0.1;  // CPU required between 0.1 - 0.5
-    pods[i].mem_required = (rand() % 1537) + 512;   // Memória requerida entre 512 e 2048
-    pods[i].disk_required = (rand() % 5 + 1) * 100; // Espaço em disco requerido entre 100 e 500
-    pods[i].is_done = 0;
-    pods[i].is_running = 0;
-    pods[i].done_by = ' ';
+    if (is_fixed_pods == 0)
+    {
+      pods[i].id = i;
+      pods[i].cpu_required = (rand() % 5 + 1) * 0.1;  // CPU required between 0.1 - 0.5
+      pods[i].mem_required = (rand() % 1537) + 512;   // Memory required between 512 - 2048
+      pods[i].disk_required = (rand() % 5 + 1) * 100; // Disk required between 100 - 500
+      pods[i].is_done = 0;
+      pods[i].is_running = 0;
+      pods[i].doing_by = ' ';
+    }
+    else
+      getFixedPods();
 
-    printf("Pod: %d, CPU: %.2lf, Memória: %.2lf, Disco: %.2lf\n", pods[i].id, pods[i].cpu_required, pods[i].mem_required, pods[i].disk_required);
+    mvwprintw(pods_initialized_win, 1, 1, "Pod Name");
+    mvwprintw(pods_initialized_win, 1, 10, "CPU");
+    mvwprintw(pods_initialized_win, 1, 15, "Memory");
+    if (is_custom_scheduler == 1)
+      mvwprintw(pods_initialized_win, 1, 25, "Disk");
+
+    mvwprintw(pods_initialized_win, i + 2, 1, "Pod %d", pods[i].id);
+    mvwprintw(pods_initialized_win, i + 2, 10, "%.2lf", pods[i].cpu_required);
+    mvwprintw(pods_initialized_win, i + 2, 15, "%.2lf", pods[i].mem_required);
+    if (is_custom_scheduler == 1)
+      mvwprintw(pods_initialized_win, i + 2, 25, "%.2lf", pods[i].disk_required);
   }
+  wrefresh(pods_initialized_win);
+}
+
+void render_worker_metrics()
+{
+  werase(worker_metrics_win);
+  mvwprintw(worker_metrics_win, 0, 1, "Worker Name");
+  mvwprintw(worker_metrics_win, 0, 15, "CPU");
+  mvwprintw(worker_metrics_win, 0, 20, "Memory");
+  if (is_custom_scheduler == 1)
+    mvwprintw(worker_metrics_win, 0, 30, "Disk");
+
+  mvwprintw(worker_metrics_win, 1, 1, "Worker A");
+  mvwprintw(worker_metrics_win, 1, 15, "%.2lf", workerA.cpu_capacity);
+  mvwprintw(worker_metrics_win, 1, 20, "%.2lf", workerA.mem_capacity);
+  if (is_custom_scheduler == 1)
+    mvwprintw(worker_metrics_win, 1, 30, "%.2lf", workerA.disk_capacity);
+
+  mvwprintw(worker_metrics_win, 2, 1, "Worker B");
+  mvwprintw(worker_metrics_win, 2, 15, "%.2lf", workerB.cpu_capacity);
+  mvwprintw(worker_metrics_win, 2, 20, "%.2lf", workerB.mem_capacity);
+  if (is_custom_scheduler == 1)
+    mvwprintw(worker_metrics_win, 2, 30, "%.2lf", workerB.disk_capacity);
+
+  wrefresh(worker_metrics_win);
+}
+
+void *worker_metrics_print(void *arg)
+{
+  while (can_finish_workers_prints == 0)
+  {
+    pthread_mutex_lock(&print_mutex);
+    render_worker_metrics();
+    pthread_mutex_unlock(&print_mutex);
+    sleep(2);
+  }
+  return NULL;
+}
+
+void *running_pods_print(void *arg)
+{
+  while (can_finish_workers_prints == 0)
+  {
+    pthread_mutex_lock(&print_mutex);
+    POD running_pods[NUM_TASKS];
+    int running_pods_count = 0;
+
+    for (int i = 0; i < NUM_TASKS; i++)
+    {
+      POD pod = pods[i];
+      if (pod.is_running == 1 && pod.is_done == 0)
+      {
+        running_pods[running_pods_count] = pod;
+        running_pods_count++;
+      }
+    }
+
+    werase(pods_win);
+    mvwprintw(pods_win, 0, 1, "Pod Name");
+    mvwprintw(pods_win, 0, 10, "Worker Name");
+    mvwprintw(pods_win, 0, 25, "CPU");
+    mvwprintw(pods_win, 0, 30, "Memory");
+    if (is_custom_scheduler == 1)
+      mvwprintw(pods_win, 0, 40, "Disk");
+
+    for (int i = 0; i < running_pods_count; i++)
+    {
+      POD pod = running_pods[i];
+
+      mvwprintw(pods_win, i + 1, 1, "Pod %d", pod.id);
+      mvwprintw(pods_win, i + 1, 10, "Worker %c", pod.doing_by);
+      mvwprintw(pods_win, i + 1, 25, "%.2lf", pod.cpu_required);
+      mvwprintw(pods_win, i + 1, 30, "%.2lf", pod.mem_required);
+      if (is_custom_scheduler == 1)
+        mvwprintw(pods_win, i + 1, 40, "%.2lf", pod.disk_required);
+    }
+    wrefresh(pods_win);
+    pthread_mutex_unlock(&print_mutex);
+    sleep(1);
+  }
+  return NULL;
 }
 
 void *worker_task_simulation(void *arg)
@@ -86,31 +207,23 @@ void *worker_task_simulation(void *arg)
   double pod_mem_required = pod.mem_required;
   double pod_disk_required = pod.disk_required;
 
-  printf("\nWorker %c going to do task %d (CPU %.2lf, Memory %.2lf, Disk %.2lf)\n",
-         worker_name, pod_id, pod_cpu_required, pod_mem_required, pod_disk_required);
   if (worker_name == 'A')
   {
     workerA.cpu_capacity -= pod_cpu_required;
     workerA.mem_capacity -= pod_mem_required;
     workerA.disk_capacity -= pod_disk_required;
-
-    printf("Now worker A has CPU: %.2lf, Memory: %.2lf, Disk: %.2lf\n", workerA.cpu_capacity, workerA.mem_capacity, workerA.disk_capacity);
   }
   else if (worker_name == 'B')
   {
     workerB.cpu_capacity -= pod_cpu_required;
     workerB.mem_capacity -= pod_mem_required;
     workerB.disk_capacity -= pod_disk_required;
-
-    printf("Now worker B has CPU: %.2lf, Memory: %.2lf, Disk: %.2lf\n", workerB.cpu_capacity, workerB.mem_capacity, workerB.disk_capacity);
   }
 
-  sleep(pod_cpu_required * 10);
-  printf("\nWorker %c finish task %d\n", worker_name, pod_id);
+  sleep(pod_cpu_required * 20);
 
   pthread_mutex_lock(&pod_mutex);
   pods[pod_id].is_done = 1;
-  pods[pod_id].done_by = worker_name;
   pthread_mutex_unlock(&pod_mutex);
 
   tasks_completed++;
@@ -123,25 +236,16 @@ void *worker_task_simulation(void *arg)
 
   if (worker_name == 'A')
   {
-    pthread_mutex_lock(&workerA_mutex);
     workerA.cpu_capacity += pod_cpu_required;
     workerA.mem_capacity += pod_mem_required;
     workerA.disk_capacity += pod_disk_required;
-
-    printf("Now worker A has CPU: %.2lf, Memória: %.2lf, Disco: %.2lf\n", workerA.cpu_capacity, workerA.mem_capacity, workerA.disk_capacity);
-    pthread_mutex_unlock(&workerA_mutex);
   }
   else if (worker_name == 'B')
   {
-    pthread_mutex_lock(&workerB_mutex);
     workerB.cpu_capacity += pod_cpu_required;
     workerB.mem_capacity += pod_mem_required;
     workerB.disk_capacity += pod_disk_required;
-
-    printf("Now worker B has CPU: %.2lf, Memória: %.2lf, Disco: %.2lf\n", workerB.cpu_capacity, workerB.mem_capacity, workerB.disk_capacity);
-    pthread_mutex_unlock(&workerB_mutex);
   }
-
   pthread_exit(0);
 }
 
@@ -180,6 +284,7 @@ void *worker(void *arg)
 
         pthread_mutex_lock(&pod_mutex);
         pods[pod_id].is_running = 1;
+        pods[pod_id].doing_by = worker_name;
         pthread_mutex_unlock(&pod_mutex);
 
         WORKER_TASK_SIMULATION_ARGS worker_task_simulation_args;
@@ -220,6 +325,7 @@ void *worker(void *arg)
 
         pthread_mutex_lock(&pod_mutex);
         pods[pod_id].is_running = 1;
+        pods[pod_id].doing_by = worker_name;
         pthread_mutex_unlock(&pod_mutex);
 
         WORKER_TASK_SIMULATION_ARGS worker_task_simulation_args;
@@ -242,7 +348,7 @@ void *worker(void *arg)
   pthread_exit(0);
 }
 
-void scheduler()
+void kube_scheduler()
 {
   pthread_mutex_lock(&pod_mutex);
   while (current_task < NUM_TASKS)
@@ -251,7 +357,119 @@ void scheduler()
     next_pod.id = -1;
     int worker_id;
 
-    // Find next task available that meets resource requirements
+    for (int i = 0; i < NUM_TASKS; i++)
+    {
+      int is_running = pods[i].is_running;
+      int is_done = pods[i].is_done;
+
+      if (is_done == 1 || is_running == 1)
+        continue;
+
+      POD pod = pods[i];
+
+      double cpu_required = pod.cpu_required;
+      double mem_required = pod.mem_required;
+
+      if (cpu_required <= workerA.cpu_capacity &&
+          mem_required <= workerA.mem_capacity &&
+          cpu_required <= workerB.cpu_capacity &&
+          mem_required <= workerB.mem_capacity)
+      {
+        double cpuDiffWorkerA = workerA.cpu_capacity - pod.cpu_required;
+        double memDiffWorkerA = workerA.mem_capacity - pod.mem_required;
+        double cpuDiffWorkerB = workerB.cpu_capacity - pod.cpu_required;
+        double memDiffWorkerB = workerB.mem_capacity - pod.mem_required;
+
+        double normalizedCpuDiffA = cpuDiffWorkerA / workerA.cpu_capacity;
+        double normalizedMemDiffA = memDiffWorkerA / workerA.mem_capacity;
+        double normalizedCpuDiffB = cpuDiffWorkerB / workerB.cpu_capacity;
+        double normalizedMemDiffB = memDiffWorkerB / workerB.mem_capacity;
+
+        double weightedDiffA = (cpuWeight * normalizedCpuDiffA) + (memWeight * normalizedMemDiffA);
+        double weightedDiffB = (cpuWeight * normalizedCpuDiffB) + (memWeight * normalizedMemDiffB);
+
+        if (weightedDiffA > weightedDiffB)
+        {
+          next_pod = pods[i];
+          worker_id = 0;
+          break;
+        }
+        else if (weightedDiffB > weightedDiffA)
+        {
+          next_pod = pods[i];
+          worker_id = 1;
+          break;
+        }
+        else
+        {
+          int randomNum = rand() % 2;
+          next_pod = pods[i];
+          worker_id = randomNum;
+          break;
+        }
+      }
+      else if (cpu_required <= workerA.cpu_capacity &&
+               mem_required <= workerA.mem_capacity)
+      {
+        next_pod = pods[i];
+        worker_id = 0;
+        break;
+      }
+      else if (cpu_required <= workerB.cpu_capacity &&
+               mem_required <= workerB.mem_capacity)
+      {
+        next_pod = pods[i];
+        worker_id = 1;
+        break;
+      }
+    }
+
+    if (next_pod.id != -1)
+    {
+      if (worker_id == 0)
+      {
+        // worker A
+        pthread_mutex_lock(&workerA_pods_mutex);
+        workerA_pods[workerA_number_of_pods] = next_pod;
+        workerA_number_of_pods++;
+        if (workerA_number_of_pods == 1)
+        { // it was 0 before
+          pthread_cond_signal(&workerA_pods_condition);
+        }
+
+        pthread_mutex_unlock(&workerA_pods_mutex);
+      }
+      else
+      {
+        // worker B
+        pthread_mutex_lock(&workerB_pods_mutex);
+        workerB_pods[workerB_number_of_pods] = next_pod;
+        workerB_number_of_pods++;
+        if (workerB_number_of_pods == 1)
+        { // it was 0 before
+          pthread_cond_signal(&workerB_pods_condition);
+        }
+
+        pthread_mutex_unlock(&workerB_pods_mutex);
+      }
+
+      current_task++;
+    }
+
+    pthread_mutex_unlock(&pod_mutex);
+    usleep(100000); // 100 ms
+  }
+}
+
+void custom_scheduler()
+{
+  pthread_mutex_lock(&pod_mutex);
+  while (current_task < NUM_TASKS)
+  {
+    POD next_pod;
+    next_pod.id = -1;
+    int worker_id;
+
     for (int i = 0; i < NUM_TASKS; i++)
     {
       int is_running = pods[i].is_running;
@@ -266,7 +484,7 @@ void scheduler()
 
       if (cpu_required <= workerA.cpu_capacity &&
           mem_required <= workerA.mem_capacity &&
-          (should_use_disk == 1 ? disk_required <= workerA.disk_capacity : 1))
+          (is_custom_scheduler == 1 ? disk_required <= workerA.disk_capacity : 1))
       {
         next_pod = pods[i];
         worker_id = 0;
@@ -275,7 +493,7 @@ void scheduler()
 
       if (cpu_required <= workerB.cpu_capacity &&
           mem_required <= workerB.mem_capacity &&
-          (should_use_disk == 1 ? disk_required <= workerB.disk_capacity : 1))
+          (is_custom_scheduler == 1 ? disk_required <= workerB.disk_capacity : 1))
       {
         next_pod = pods[i];
         worker_id = 1;
@@ -322,24 +540,38 @@ void scheduler()
 
 void history()
 {
-  printf("\n\n");
-  system("figlet -f digital PODS history");
+  werase(pods_win);
+  mvwprintw(pods_win, 0, 1, "History:");
   for (int i = 0; i < NUM_TASKS; i++)
   {
-    printf("Pod %d done by %c\n", pods[i].id, pods[i].done_by);
+    mvwprintw(pods_win, i, 1, "Pod %d done by %c", pods[i].id, pods[i].doing_by);
   }
-  printf("\n");
+  wrefresh(pods_win);
 }
 
 int main(int argc, char *argv[])
 {
-  if (argc != 2)
+
+  if (argc != 3)
   {
-    printf("Incorrect: %s <number> <1=disk, 0=no disk> <1=random pods, 2=fixed pods>\n\n", argv[0]);
+    printf("Incorrect: %s <number> <1=custom, 0=kubernetes> <0=random pods, 1=fixed pods>\n\n", argv[0]);
     return 1;
   }
 
-  should_use_disk = atol(argv[1]);
+  initscr(); // Initialize ncurses
+  cbreak();  // Disable line buffering
+  noecho();  // Disable echoing
+
+  pods_initialized_win = newwin(13, 40, 0, 0);
+  worker_metrics_win = newwin(4, 40, 14, 0);
+  pods_win = newwin(11, 60, 19, 0);
+
+  werase(pods_initialized_win);
+  werase(worker_metrics_win);
+  werase(pods_win);
+
+  is_custom_scheduler = atol(argv[1]);
+  is_fixed_pods = atol(argv[2]);
   initializePods();
 
   pthread_t threads[NUM_THREADS];
@@ -351,12 +583,24 @@ int main(int argc, char *argv[])
     pthread_create(&threads[i], NULL, worker, &thread_ids[i]);
   }
 
-  scheduler();
+  pthread_t thread_metrics, thread_running_pods;
+  pthread_create(&thread_metrics, NULL, worker_metrics_print, NULL);
+  pthread_create(&thread_running_pods, NULL, running_pods_print, NULL);
+
+  if (is_custom_scheduler)
+    custom_scheduler();
+  else
+    kube_scheduler();
 
   for (int i = 0; i < NUM_THREADS; i++)
   {
     pthread_join(threads[i], NULL);
   }
+  can_finish_workers_prints = 1;
+  pthread_join(thread_metrics, NULL);
+  pthread_join(thread_running_pods, NULL);
+
+  render_worker_metrics();
 
   history();
   return 0;
