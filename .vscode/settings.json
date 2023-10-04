@@ -26,6 +26,7 @@
     "iterator": "c",
     "chrono": "c",
     "format": "c",
-    "unistd.h": "c"
+    "unistd.h": "c",
+    "complex": "c"
   }
 }
