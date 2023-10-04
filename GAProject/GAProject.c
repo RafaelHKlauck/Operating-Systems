@@ -3,9 +3,10 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <ncurses.h>
+#include <time.h>
 
 #define NUM_THREADS 2
-#define NUM_TASKS 10
+#define NUM_TASKS 20
 
 typedef struct
 {
@@ -66,6 +67,7 @@ double memWeight = 2.0;
 WINDOW *pods_initialized_win;
 WINDOW *worker_metrics_win;
 WINDOW *pods_win;
+WINDOW *scheduler_time;
 
 void getFixedPods()
 {
@@ -79,6 +81,16 @@ void getFixedPods()
   pods[7] = (POD){7, 0.4, 1024, 300, 0, 0, ' '};
   pods[8] = (POD){8, 0.3, 1000, 400, 0, 0, ' '};
   pods[9] = (POD){9, 0.5, 1024, 500, 0, 0, ' '};
+  pods[10] = (POD){10, 0.1, 512, 100, 0, 0, ' '};
+  pods[11] = (POD){11, 0.1, 512, 200, 0, 0, ' '};
+  pods[12] = (POD){12, 0.2, 1024, 300, 0, 0, ' '};
+  pods[13] = (POD){13, 0.4, 2048, 400, 0, 0, ' '};
+  pods[14] = (POD){14, 0.4, 512, 500, 0, 0, ' '};
+  pods[15] = (POD){15, 0.2, 1024, 100, 0, 0, ' '};
+  pods[16] = (POD){16, 0.3, 1536, 200, 0, 0, ' '};
+  pods[17] = (POD){17, 0.4, 1024, 300, 0, 0, ' '};
+  pods[18] = (POD){18, 0.3, 1000, 400, 0, 0, ' '};
+  pods[19] = (POD){19, 0.5, 1024, 500, 0, 0, ' '};
 }
 
 void initializePods()
@@ -192,6 +204,28 @@ void *running_pods_print(void *arg)
     wrefresh(pods_win);
     pthread_mutex_unlock(&print_mutex);
     sleep(1);
+  }
+  return NULL;
+}
+
+void *pods_done_print(void *arg)
+{
+  while (can_finish_workers_prints == 0)
+  {
+    pthread_mutex_lock(&print_mutex);
+    mvwprintw(pods_initialized_win, 1, is_custom_scheduler == 1 ? 35 : 25, "Done by");
+
+    for (int i = 0; i < NUM_TASKS; i++)
+    {
+      POD pod = pods[i];
+      if (pod.is_done == 0)
+        continue;
+      mvwprintw(pods_initialized_win, i + 2, is_custom_scheduler == 1 ? 35 : 25, "%c", pod.doing_by);
+    }
+
+    wrefresh(pods_initialized_win);
+    pthread_mutex_unlock(&print_mutex);
+    sleep(2);
   }
   return NULL;
 }
@@ -540,18 +574,16 @@ void custom_scheduler()
 
 void history()
 {
-  werase(pods_win);
-  mvwprintw(pods_win, 0, 1, "History:");
+  mvwprintw(pods_initialized_win, 1, is_custom_scheduler == 1 ? 35 : 25, "Done by");
   for (int i = 0; i < NUM_TASKS; i++)
   {
-    mvwprintw(pods_win, i, 1, "Pod %d done by %c", pods[i].id, pods[i].doing_by);
+    mvwprintw(pods_initialized_win, i + 2, is_custom_scheduler == 1 ? 35 : 25, "%c", pods[i].doing_by);
   }
-  wrefresh(pods_win);
+  wrefresh(pods_initialized_win);
 }
 
 int main(int argc, char *argv[])
 {
-
   if (argc != 3)
   {
     printf("Incorrect: %s <number> <1=custom, 0=kubernetes> <0=random pods, 1=fixed pods>\n\n", argv[0]);
@@ -561,14 +593,21 @@ int main(int argc, char *argv[])
   initscr(); // Initialize ncurses
   cbreak();  // Disable line buffering
   noecho();  // Disable echoing
+  struct timespec start_time, end_time;
 
-  pods_initialized_win = newwin(13, 40, 0, 0);
-  worker_metrics_win = newwin(4, 40, 14, 0);
-  pods_win = newwin(11, 60, 19, 0);
+  int pods_initialized_win_num_lines = NUM_TASKS + 3;
+  int worker_metrics_win_start_line = pods_initialized_win_num_lines + 1;
+  int pods_win_start_line = worker_metrics_win_start_line + 4;
+
+  pods_initialized_win = newwin(NUM_TASKS + 3, 60, 0, 0);
+  worker_metrics_win = newwin(4, 40, worker_metrics_win_start_line, 0);
+  pods_win = newwin(NUM_TASKS + 1, 60, worker_metrics_win_start_line + 4, 0);
+  scheduler_time = newwin(1, 60, worker_metrics_win_start_line + 4, 0);
 
   werase(pods_initialized_win);
   werase(worker_metrics_win);
   werase(pods_win);
+  werase(scheduler_time);
 
   is_custom_scheduler = atol(argv[1]);
   is_fixed_pods = atol(argv[2]);
@@ -583,14 +622,19 @@ int main(int argc, char *argv[])
     pthread_create(&threads[i], NULL, worker, &thread_ids[i]);
   }
 
-  pthread_t thread_metrics, thread_running_pods;
+  pthread_t thread_metrics, thread_running_pods, thread_pods_done;
   pthread_create(&thread_metrics, NULL, worker_metrics_print, NULL);
   pthread_create(&thread_running_pods, NULL, running_pods_print, NULL);
+  pthread_create(&thread_pods_done, NULL, pods_done_print, NULL);
 
+  clock_gettime(CLOCK_MONOTONIC, &start_time);
   if (is_custom_scheduler)
     custom_scheduler();
   else
     kube_scheduler();
+  clock_gettime(CLOCK_MONOTONIC, &end_time);
+
+  double elapsed_time = (end_time.tv_sec - start_time.tv_sec) + (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
 
   for (int i = 0; i < NUM_THREADS; i++)
   {
@@ -599,9 +643,14 @@ int main(int argc, char *argv[])
   can_finish_workers_prints = 1;
   pthread_join(thread_metrics, NULL);
   pthread_join(thread_running_pods, NULL);
+  pthread_join(thread_pods_done, NULL);
 
   render_worker_metrics();
+  werase(pods_win);
 
   history();
+  mvwprintw(scheduler_time, 0, 1, "Time spent in scheduler %.2lf seconds", elapsed_time);
+  wrefresh(scheduler_time);
+
   return 0;
 }

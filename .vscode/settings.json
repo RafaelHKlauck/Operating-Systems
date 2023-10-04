@@ -27,6 +27,7 @@
     "chrono": "c",
     "format": "c",
     "unistd.h": "c",
-    "complex": "c"
+    "complex": "c",
+    "ncurses.h": "c"
   }
 }
