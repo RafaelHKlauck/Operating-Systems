@@ -518,7 +518,7 @@ void custom_scheduler()
 
       if (cpu_required <= workerA.cpu_capacity &&
           mem_required <= workerA.mem_capacity &&
-          (is_custom_scheduler == 1 ? disk_required <= workerA.disk_capacity : 1))
+          disk_required <= workerA.disk_capacity)
       {
         next_pod = pods[i];
         worker_id = 0;
@@ -527,7 +527,7 @@ void custom_scheduler()
 
       if (cpu_required <= workerB.cpu_capacity &&
           mem_required <= workerB.mem_capacity &&
-          (is_custom_scheduler == 1 ? disk_required <= workerB.disk_capacity : 1))
+          disk_required <= workerB.disk_capacity)
       {
         next_pod = pods[i];
         worker_id = 1;
@@ -623,9 +623,9 @@ int main(int argc, char *argv[])
   }
 
   pthread_t thread_metrics, thread_running_pods, thread_pods_done;
-  pthread_create(&thread_metrics, NULL, worker_metrics_print, NULL);
-  pthread_create(&thread_running_pods, NULL, running_pods_print, NULL);
-  pthread_create(&thread_pods_done, NULL, pods_done_print, NULL);
+  pthread_create(&thread_metrics, NULL, worker_metrics_print, NULL);    // 2 seconds
+  pthread_create(&thread_running_pods, NULL, running_pods_print, NULL); // 1 second
+  pthread_create(&thread_pods_done, NULL, pods_done_print, NULL);       // 2 seconds
 
   clock_gettime(CLOCK_MONOTONIC, &start_time);
   if (is_custom_scheduler)
