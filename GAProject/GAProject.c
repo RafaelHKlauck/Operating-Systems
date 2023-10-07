@@ -6,7 +6,7 @@
 #include <time.h>
 
 #define NUM_THREADS 2
-#define NUM_TASKS 20
+#define NUM_PODS 20
 
 typedef struct
 {
@@ -36,8 +36,8 @@ WORKER workerA = {'A', 0.4, 1500, 1000};
 WORKER workerB = {'B', 0.7, 2048, 800};
 
 // Array with jobs for workes
-POD workerA_pods[NUM_TASKS];
-POD workerB_pods[NUM_TASKS];
+POD workerA_pods[NUM_PODS];
+POD workerB_pods[NUM_PODS];
 int workerA_number_of_pods = 0;
 int workerB_number_of_pods = 0;
 
@@ -50,15 +50,15 @@ pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;        // Mutex to prin
 pthread_cond_t workerA_pods_condition = PTHREAD_COND_INITIALIZER;
 pthread_cond_t workerB_pods_condition = PTHREAD_COND_INITIALIZER;
 
-int current_task = 0;
-int tasks_completed = 0;
+int current_pod = 0;
+int pods_completed = 0;
 int is_custom_scheduler = 0;
 int is_fixed_pods = 0;
 int can_finish_workers_prints = 0;
 
-pthread_t workers_threads_simulations[NUM_TASKS];
+pthread_t workers_threads_simulations[NUM_PODS];
 
-POD pods[NUM_TASKS];
+POD pods[NUM_PODS];
 
 // Used only in kube_scheduler
 double cpuWeight = 1.0;
@@ -98,7 +98,7 @@ void initializePods()
   srand(time(NULL));
   werase(pods_initialized_win);
   mvwprintw(pods_initialized_win, 0, 1, "Pods initialized:");
-  for (int i = 0; i < NUM_TASKS; i++)
+  for (int i = 0; i < NUM_PODS; i++)
   {
     if (is_fixed_pods == 0)
     {
@@ -169,10 +169,10 @@ void *running_pods_print(void *arg)
   while (can_finish_workers_prints == 0)
   {
     pthread_mutex_lock(&print_mutex);
-    POD running_pods[NUM_TASKS];
+    POD running_pods[NUM_PODS];
     int running_pods_count = 0;
 
-    for (int i = 0; i < NUM_TASKS; i++)
+    for (int i = 0; i < NUM_PODS; i++)
     {
       POD pod = pods[i];
       if (pod.is_running == 1 && pod.is_done == 0)
@@ -215,7 +215,7 @@ void *pods_done_print(void *arg)
     pthread_mutex_lock(&print_mutex);
     mvwprintw(pods_initialized_win, 1, is_custom_scheduler == 1 ? 35 : 25, "Done by");
 
-    for (int i = 0; i < NUM_TASKS; i++)
+    for (int i = 0; i < NUM_PODS; i++)
     {
       POD pod = pods[i];
       if (pod.is_done == 0)
@@ -254,14 +254,14 @@ void *worker_task_simulation(void *arg)
     workerB.disk_capacity -= pod_disk_required;
   }
 
-  sleep(pod_cpu_required * 20);
+  sleep(pod_cpu_required * 10);
 
   pthread_mutex_lock(&pod_mutex);
   pods[pod_id].is_done = 1;
   pthread_mutex_unlock(&pod_mutex);
 
-  tasks_completed++;
-  if (tasks_completed == NUM_TASKS)
+  pods_completed++;
+  if (pods_completed == NUM_PODS)
   {
     // all tasks were completed!
     pthread_cond_signal(&workerA_pods_condition);
@@ -298,7 +298,7 @@ void *worker(void *arg)
       while (workerA_number_of_pods == 0)
       {
         pthread_cond_wait(&workerA_pods_condition, &workerA_pods_mutex);
-        if (tasks_completed == NUM_TASKS)
+        if (pods_completed == NUM_PODS)
         {
           should_break = 1;
           break;
@@ -336,10 +336,10 @@ void *worker(void *arg)
       // Worker B
       int should_break = 0;
       pthread_mutex_lock(&workerB_pods_mutex);
-      while (workerB_number_of_pods == 0 && tasks_completed < NUM_TASKS)
+      while (workerB_number_of_pods == 0 && pods_completed < NUM_PODS)
       {
         pthread_cond_wait(&workerB_pods_condition, &workerB_pods_mutex);
-        if (tasks_completed == NUM_TASKS)
+        if (pods_completed == NUM_PODS)
         {
           should_break = 1;
           break;
@@ -374,7 +374,7 @@ void *worker(void *arg)
     }
   }
 
-  for (int i = 0; i < NUM_TASKS; i++)
+  for (int i = 0; i < NUM_PODS; i++)
   {
     pthread_join(workers_threads_simulations[i], NULL);
   };
@@ -385,13 +385,13 @@ void *worker(void *arg)
 void kube_scheduler()
 {
   pthread_mutex_lock(&pod_mutex);
-  while (current_task < NUM_TASKS)
+  while (current_pod < NUM_PODS)
   {
     POD next_pod;
     next_pod.id = -1;
     int worker_id;
 
-    for (int i = 0; i < NUM_TASKS; i++)
+    for (int i = 0; i < NUM_PODS; i++)
     {
       int is_running = pods[i].is_running;
       int is_done = pods[i].is_done;
@@ -487,7 +487,7 @@ void kube_scheduler()
         pthread_mutex_unlock(&workerB_pods_mutex);
       }
 
-      current_task++;
+      current_pod++;
     }
 
     pthread_mutex_unlock(&pod_mutex);
@@ -498,13 +498,13 @@ void kube_scheduler()
 void custom_scheduler()
 {
   pthread_mutex_lock(&pod_mutex);
-  while (current_task < NUM_TASKS)
+  while (current_pod < NUM_PODS)
   {
     POD next_pod;
     next_pod.id = -1;
     int worker_id;
 
-    for (int i = 0; i < NUM_TASKS; i++)
+    for (int i = 0; i < NUM_PODS; i++)
     {
       int is_running = pods[i].is_running;
       int is_done = pods[i].is_done;
@@ -564,7 +564,7 @@ void custom_scheduler()
         pthread_mutex_unlock(&workerB_pods_mutex);
       }
 
-      current_task++;
+      current_pod++;
     }
 
     pthread_mutex_unlock(&pod_mutex);
@@ -575,7 +575,7 @@ void custom_scheduler()
 void history()
 {
   mvwprintw(pods_initialized_win, 1, is_custom_scheduler == 1 ? 35 : 25, "Done by");
-  for (int i = 0; i < NUM_TASKS; i++)
+  for (int i = 0; i < NUM_PODS; i++)
   {
     mvwprintw(pods_initialized_win, i + 2, is_custom_scheduler == 1 ? 35 : 25, "%c", pods[i].doing_by);
   }
@@ -584,6 +584,7 @@ void history()
 
 int main(int argc, char *argv[])
 {
+
   if (argc != 3)
   {
     printf("Incorrect: %s <number> <1=custom, 0=kubernetes> <0=random pods, 1=fixed pods>\n\n", argv[0]);
@@ -595,13 +596,13 @@ int main(int argc, char *argv[])
   noecho();  // Disable echoing
   struct timespec start_time, end_time;
 
-  int pods_initialized_win_num_lines = NUM_TASKS + 3;
+  int pods_initialized_win_num_lines = NUM_PODS + 3;
   int worker_metrics_win_start_line = pods_initialized_win_num_lines + 1;
   int pods_win_start_line = worker_metrics_win_start_line + 4;
 
-  pods_initialized_win = newwin(NUM_TASKS + 3, 60, 0, 0);
+  pods_initialized_win = newwin(NUM_PODS + 3, 60, 0, 0);
   worker_metrics_win = newwin(4, 40, worker_metrics_win_start_line, 0);
-  pods_win = newwin(NUM_TASKS + 1, 60, worker_metrics_win_start_line + 4, 0);
+  pods_win = newwin(NUM_PODS + 1, 60, worker_metrics_win_start_line + 4, 0);
   scheduler_time = newwin(1, 60, worker_metrics_win_start_line + 4, 0);
 
   werase(pods_initialized_win);

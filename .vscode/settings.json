@@ -28,6 +28,7 @@
     "format": "c",
     "unistd.h": "c",
     "complex": "c",
-    "ncurses.h": "c"
+    "ncurses.h": "c",
+    "time.h": "c"
   }
 }
