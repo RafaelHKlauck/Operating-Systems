@@ -152,8 +152,6 @@ class FileSystem {
   }
 
   private getTextInodePermissions(inode: Inode) {
-    const user = this.loggedUser;
-
     const linuxPermissionsMap = {
       [Permissions.Read]: "r",
       [Permissions.Write]: "w",
@@ -306,10 +304,9 @@ class FileSystem {
       return {
         ...inode,
         updatedAt: new Date(),
+        permission,
       };
     });
-
-    inode.permission = permission;
   }
 
   mkdir(name: string) {
