@@ -20,8 +20,6 @@ type DirectoryMap = {
   [fileName: string]: string;
 };
 
-type BlockContent = null | string;
-
 enum Permissions {
   Read = "read",
   Write = "write",
@@ -74,7 +72,7 @@ class FileSystem {
   directoryId: string;
   users: User[];
   loggedUser: User;
-  blocks: BlockContent[];
+  blocks: Array<string | null>;
 
   constructor() {
     this.initializeSystem();
